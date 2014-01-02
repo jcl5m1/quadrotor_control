@@ -14,7 +14,8 @@ using namespace cv;
 using namespace Eigen;
 
 Point2f mousePos(0,0);
-KalmanFilterPosVelAccel2D kf(10000);
+//KalmanFilterPosVelAccel2D kf(10000);
+KalmanFilterPosVel2D kf(10000);
 
 void onMouse(int event, int x, int y, int flags, void * data){
     mousePos.x = x;
@@ -40,8 +41,8 @@ int main(int argc, char** argv)
         DrawCrossHair(img, mousePos,5);
 
         Vector2f meas(mousePos.x,mousePos.y);
-        kf.UdpateUsingWindow(meas,10);
-//        printMatrix("covar", kf.Covariance());
+        kf.Update(meas,10);
+        printMatrix("covar", kf.Covariance());
 
         Vector2f pos = kf.PredictedPos();
         ellipse(img, Point(pos[0], pos[1]),Size(20,20),0,0,360,Scalar(0,255,0));
