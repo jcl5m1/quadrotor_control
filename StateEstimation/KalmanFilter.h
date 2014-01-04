@@ -6,6 +6,7 @@
 #include "Eigen/Core"
 #include "Eigen/LU"
 #include "stdio.h"
+#include "float.h"
 
 
 using namespace Eigen;
@@ -56,8 +57,6 @@ public:
         return s;
     }
 };
-
-
 
 class KalmanFilterGeneral1D {
 
@@ -120,7 +119,6 @@ public:
         P = P; //update the covariance using the transition matrix
     }
 };
-
 
 class KalmanFilterPosVelAccel2D {
 
@@ -299,7 +297,6 @@ public:
     Matrix<float, measureDim,measureDim> S;
     Matrix<float, stateSize,measureDim> K;
 
-
     static const float duration = 30;
     static const float dt = 0.1f;
 
@@ -392,5 +389,134 @@ public:
 
 };
 
+class KalmanFilter2DPosVelAccel {
+
+public:
+
+    static const int stateSize = 6;
+    static const int measureDim = 2;
+
+    //this a 2D position with hidden velocity and acceleration on each axis
+    Matrix<float, stateSize,1> x; //state estimate
+    Matrix<float, stateSize,1> px; //predicted state
+    Matrix<float, stateSize,stateSize> P; //uncertainty covariance
+    Matrix<float, stateSize,stateSize> pP; //predicted uncertainty covariance
+
+    Matrix<float, stateSize,stateSize> Ex; //state prediction noise
+
+    Matrix<float, stateSize,stateSize> A;//state1 to state2 equations
+    Matrix<float, stateSize,1> B;//control input to state equations
+    Matrix<float, measureDim,stateSize> C; //state-to-measurement equation
+
+    Matrix<float, stateSize,stateSize> I; //identity
+
+    Matrix<float, measureDim,measureDim> S;
+    Matrix<float, stateSize,measureDim> K;
+
+    KalmanFilter2DPosVelAccel(){
+
+        ResetEstimation();
+
+        //measurement noise - default to identity
+        Ex =  MatrixXf::Identity(stateSize, stateSize);
+
+        //measurement function
+        C << 1,0,0,0,0,0,
+             0,0,0,1,0,0; //only measure positions
+
+        I = MatrixXf::Identity(stateSize,stateSize);
+
+        //noise of state transition?
+        Ex = MatrixXf::Identity(stateSize,stateSize);
+
+        //state covariance
+        P = Ex;
+    }
+
+    Matrix<float, stateSize,stateSize> Covariance() {
+        return P;
+    }
+
+    Matrix<float, stateSize,1> State() {
+        return x;
+    }
+
+    Vector2f Position() {
+        Vector2f result;
+        result[0] = x(0);
+        result[1] = x(3);
+        return result;
+    }
+
+    Vector2f Velocity() {
+        Vector2f result;
+        result[0] = px(1);
+        result[1] = px(4);
+        return result;
+    }
+
+
+    Vector2f PredictedPosition(float dt) {
+
+        GenerateTransitionMatrix(dt);
+        px = A*x;
+        Vector2f result;
+        result[0] = px(0);
+        result[1] = px(3);
+        return result;
+    }
+
+
+    void ResetEstimation() {
+        x.setZero();
+
+        //noise of state transition?
+        Ex = 3*MatrixXf::Identity(stateSize,stateSize);
+
+        //state covariance
+        P.setConstant(stateSize, stateSize,FLT_MAX);
+    }
+
+    void GenerateTransitionMatrix(float dt) {
+        //state transition matrix
+        A << 1, dt,0.5*dt*dt, 0, 0, 0, //pos' = pos + dy*vel
+             0, 1, dt,        0, 0, 0, //vel' = vel
+             0, 0, 1,         0, 0, 0,
+             0, 0, 0,         1, dt,0.5*dt*dt,
+             0, 0, 0,         0, 1, dt,
+             0, 0, 0,         0, 0, 1;
+    }
+
+    void Update(Matrix<float, measureDim,1> z, Matrix<float, measureDim,measureDim> Ez, Matrix<float, 1,1> u, float dt) {
+
+        GenerateTransitionMatrix(dt);
+
+//        B << dt*dt/2, dt;  //control input into state
+
+        //predicted state = transitionMat*state + controlMat*control
+        px = A*x + B*u;
+
+        //predictedCov = Cov projected into state transition space + state update noise
+        //this makes the covariance wider after the motion prediction step
+        pP = A*P*A.transpose() + Ex; //why do you have to do the projection rather than just multply?
+
+        //predicted var of measurment =
+        //     predicted var state projected into measurement space + measurement var
+        S =(C*pP*C.transpose() + Ez);
+
+        //kalman gain: strength to apply measurement data to the state data
+        //roughly total confidence the update = predicted var of the state / var of measurment
+        //high confidence in measurement = high confidence in the update
+        K = pP*C.transpose() * S.inverse();
+
+        //apple the update
+        //new state = predictedState + confidence in difference between measurement and predicted mesaurement
+        x = px + K*(z - C*px);
+
+        //new cov = (1-confidence of )*predictedCov
+        P = (I - K*C)*pP;
+    }
+
+};
 
 #endif // KALMANFILTER_H
