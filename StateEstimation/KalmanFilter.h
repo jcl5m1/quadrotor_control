@@ -398,9 +398,7 @@ public:
 
     //this a 2D position with hidden velocity and acceleration on each axis
     Matrix<float, stateSize,1> x; //state estimate
-    Matrix<float, stateSize,1> px; //predicted state
     Matrix<float, stateSize,stateSize> P; //uncertainty covariance
-    Matrix<float, stateSize,stateSize> pP; //predicted uncertainty covariance
 
     Matrix<float, stateSize,stateSize> Ex; //state prediction noise
 
@@ -414,7 +412,6 @@ public:
     Matrix<float, stateSize,measureDim> K;
 
     KalmanFilter2DPosVelAccel(){
-
         ResetEstimation();
 
         //measurement noise - default to identity
@@ -425,12 +422,6 @@ public:
              0,0,0,1,0,0; //only measure positions
 
         I = MatrixXf::Identity(stateSize,stateSize);
-
-        //noise of state transition?
-        Ex = MatrixXf::Identity(stateSize,stateSize);
-
-        //state covariance
-        P = Ex;
     }
 
     Matrix<float, stateSize,stateSize> Covariance() {
@@ -448,17 +439,10 @@ public:
         return result;
     }
 
-    Vector2f Velocity() {
-        Vector2f result;
-        result[0] = px(1);
-        result[1] = px(4);
-        return result;
-    }
-
 
     Vector2f PredictedPosition(float dt) {
-
         GenerateTransitionMatrix(dt);
+        Matrix<float, stateSize,1> px;
         px = A*x;
         Vector2f result;
         result[0] = px(0);
@@ -467,14 +451,21 @@ public:
     }
 
 
+    Vector2f Velocity() {
+        Vector2f result;
+        result[0] = x(1);
+        result[1] = x(4);
+        return result;
+    }
+
     void ResetEstimation() {
         x.setZero();
 
-        //noise of state transition?
-        Ex = 3*MatrixXf::Identity(stateSize,stateSize);
+        //variability in prediction - i.e. how wrong is our prediction model
+        Ex = MatrixXf::Identity(stateSize,stateSize);
 
-        //state covariance
-        P.setConstant(stateSize, stateSize,FLT_MAX);
+        //initial state covariance
+        P = MatrixXf::Identity(stateSize,stateSize);
     }
 
     void GenerateTransitionMatrix(float dt) {
@@ -494,27 +485,27 @@ public:
 //        B << dt*dt/2, dt;  //control input into state
 
         //predicted state = transitionMat*state + controlMat*control
-        px = A*x + B*u;
+        x = A*x + B*u;
 
         //predictedCov = Cov projected into state transition space + state update noise
         //this makes the covariance wider after the motion prediction step
-        pP = A*P*A.transpose() + Ex; //why do you have to do the projection rather than just multply?
+        P = A*P*A.transpose() + Ex; //why do you have to do the projection rather than just multply?
 
         //predicted var of measurment =
         //     predicted var state projected into measurement space + measurement var
-        S =(C*pP*C.transpose() + Ez);
+        S =(C*P*C.transpose() + Ez);
 
         //kalman gain: strength to apply measurement data to the state data
         //roughly total confidence the update = predicted var of the state / var of measurment
         //high confidence in measurement = high confidence in the update
-        K = pP*C.transpose() * S.inverse();
+        K = P*C.transpose() * S.inverse();
 
         //apple the update
         //new state = predictedState + confidence in difference between measurement and predicted mesaurement
-        x = px + K*(z - C*px);
+        x = x + K*(z - C*x);
 
         //new cov = (1-confidence of )*predictedCov
-        P = (I - K*C)*pP;
+        P = (I - K*C)*P;
     }
 
 };
