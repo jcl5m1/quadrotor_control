@@ -5,6 +5,8 @@
 #include <math.h>
 #include "Eigen/Core"
 #include "Eigen/LU"
+#include "stdio.h"
+
 
 using namespace Eigen;
 using namespace std;
@@ -13,6 +15,29 @@ template <class T>
 inline void printMatrix(const char * name,const T & m) {
     cout << name << "----\n" << m << endl;
 }
+
+
+inline float randf() {
+    return rand()/(float)RAND_MAX;
+}
+
+inline float randfGaussian(float mu = 0, float sig =1) {
+    //uses the box muller method
+    float u = randf();
+    float v = randf();
+    return sig*sqrtf(-2*log(u))*cos(2*M_PI*v) + mu;
+}
+
+inline Vector2f randVec2fGaussian(float mu_x = 0,float mu_y = 0, float sig_x = 1, float sig_y = 1) {
+    //uses the box muller method
+    float u = rand()/(float)RAND_MAX;
+    float v = rand()/(float)RAND_MAX;
+    Vector2f result;
+    result[0] = sig_x*sqrtf(-2*log(u))*cos(2*M_PI*v) + mu_x;
+    result[1] = sig_y*sqrtf(-2*log(u))*sin(2*M_PI*v) + mu_y;
+    return result;
+}
+
 
 
 class KalmanFilter1D {
@@ -31,6 +56,7 @@ public:
         return s;
     }
 };
+
 
 
 class KalmanFilterGeneral1D {
@@ -246,31 +272,24 @@ public:
 };
 
 //kalman with motor command
-class KalmanFilterPosVel2D {
+class KalmanFilterNinjaQuail {
 
-    static const int xPos = 0;
-    static const int xVel = 1;
-    static const int yPos = 2;
-    static const int yVel = 3;
+public:
 
-    static const int stateSize = 4;
-    static const int measureDim = 2;
+    static const int stateSize = 2;
+    static const int measureDim = 1;
 
-    static const int historySize = 10;
-
-    float initialVariance;
     //this a 2D position with hidden velocity and acceleration on each axis
     Matrix<float, stateSize,1> x; //state estimate
     Matrix<float, stateSize,stateSize> P; //uncertainty covariance
     Matrix<float, stateSize,stateSize> pP; //predicted uncertainty covariance
     Matrix<float, stateSize,stateSize> A;//state1 to state2 equations
-    Matrix<float, stateSize,stateSize> B;//control input to state equations
-    Matrix<float, stateSize,1> u; //control input matrix
+    Matrix<float, stateSize,1> B;//control input to state equations
+
     Matrix<float, stateSize,stateSize> Ex; //noise of a state prediction
     Matrix<float, stateSize,1> px; //state update noise
 
     Matrix<float, measureDim,stateSize> C; //state-to-measurement equation
-    Matrix<float, measureDim,measureDim> Ez; //measurement prediction noise
     Matrix<float, measureDim,1> pz; //predicted measurement
 
     Matrix<float, stateSize,stateSize> I; //identity
@@ -280,61 +299,79 @@ class KalmanFilterPosVel2D {
     Matrix<float, measureDim,measureDim> S;
     Matrix<float, stateSize,measureDim> K;
 
-    Matrix<float, historySize, measureDim> measurementHistory;
-    int historyIndex;
 
-public:
-    KalmanFilterPosVel2D(float initVariance = 1000){
+    static const float duration = 30;
+    static const float dt = 0.1f;
 
-        //variance of all state varables, same for all
-        initialVariance = initVariance;
-
-        historyIndex = 0;
+    KalmanFilterNinjaQuail(){
 
         ResetEstimation();
 
-        //motion change
-        u.setZero();//nothing outside of state estimate
-
         //measurement noise - default to identity
-        Ex =  MatrixXf::Identity(measureDim, measureDim);
+        Ex =  MatrixXf::Identity(stateSize, stateSize);
 
         //state transition matrix
-        A << 1,1,   0,0, //pos' = pos + vel
-             0,1,   0,0, //vel' = vel
-             0,0,   1,1,
-             0,0,   0,1;
+        A << 1,dt, //pos' = pos + dy*vel
+             0,1; //vel' = vel
+
+        B << dt*dt/2, dt;  //control input into state
+
         //measurement function
-        C << 1,0,0,0,
-             0,0,1,0; //only measure positions
+        C << 1,0; //only measure positions
 
         I = MatrixXf::Identity(stateSize,stateSize);
-    }
 
+        Matrix<float, stateSize,1> Q; //quail state
+        Matrix<float, stateSize,1> Qest; //quail state estimate
+        Q <<  0,0;
+        Qest = Q;
 
-    Vector2f PredictedPos() {
-        Vector2f result(x(xPos),x(yPos));
-        return result;
+        //noise of measurement
+        //Ez << NinjaVision_noise_mag*NinjaVision_noise_mag;
+
+        //noise of state transition?
+        Ex = MatrixXf::Identity(stateSize,stateSize);
+
+        //state covariance
+        P = Ex;
     }
 
     Matrix<float, stateSize,stateSize> Covariance() {
         return P;
     }
 
-    void ResetEstimation() {
-        //state estimate x_pos, x_vel, x_acc, y_pos, y_vel, y_acc
-        x.setZero();
-        P  = MatrixXf::Identity(stateSize,stateSize)*initialVariance;
+    Matrix<float, stateSize,1> State() {
+        return x;
     }
 
-    void Update(Matrix<float, measureDim,1> z, float measurementVar = 1) {
+    Matrix<float, stateSize,1> PredictedState() {
+        return A*x;
+    }
 
+    void ResetEstimation() {
+        x.setZero();
+
+        //noise of state transition?
+        Ex = MatrixXf::Identity(stateSize,stateSize);
+
+        //state covariance
+        P = MatrixXf::Identity(stateSize, stateSize)*1000;
+    }
+
+
+
+    void Update(Matrix<float, measureDim,1> z, Matrix<float, measureDim,measureDim> Ez, Matrix<float, 1,1> u) {
         //predicted state = transitionMat*state + controlMat*control
         px = A*x + B*u;
 
         //predictedCov = Cov projected into state transition space + state update noise
         //this makes the covariance wider after the motion prediction step
         pP = A*P*A.transpose() + Ex; //why do you have to do the projection rather than just multply
+
+//        printMatrix("z", z.transpose());
+//        printMatrix("u", u.transpose());
+//        printMatrix("px", px.transpose());
+//        printMatrix("pP", pP);
 
         //predicted var of measurment =
         //     predicted var state projected into measurement space + measurement var
@@ -345,75 +382,14 @@ public:
         //high confidence in measurement = high confidence in the update
         K = pP*C.transpose() * S.inverse();
 
-
         //apple the update
         //new state = predictedState + confidence in difference between measurement and predicted mesaurement
         x = px + K*(z - C*px);
 
         //new cov = (1-confidence of )*predictedCov
         P = (I - K*C)*pP;
-
-
-
-
-        //state prediction
-//        px = A*x + B*u + Ex;
-
-        //sensor prediction
-  //      pz = C*px + Ez;
-
-        //state estimation = predicted state + scaled diff between actual and predicted measurment
-    //    x = px + K*(z - pz);
-
-
-//        //measurement noise - made up
-//        Ex << measurementVar,0, //x is 1
-//             0,measurementVar; //y is 1
-
-//        //measurement update
-//        y = z - H*x; //error between predicted and measured values
-//        S = H*P*H.transpose() + Ex;//project system uncertainty into the measurement space with noise
-//        K = P*H.transpose() * S.inverse();//compute scaling coefficient for the correction
-//        x = x + K*y;//correct our state based off a scaled version of the error
-//        P = (I - K*H)*P;//compute updated uncertainty covariance
-
-//        //update prediction
-//        x = A*x + B*u;//update state using transition matrix plus external impact
-//        P = A*P*A.transpose() + Ex; //update the covariance using the transition matrix
     }
 
-
-    void Test() {
-
-//        //position measurements
-//        const int measurementCount = 5;
-//        Matrix<float,measurementCount,measureDim> measurement;
-//        measurement <<
-//           5, 0,
-//           7, 1,
-//           13, 4,
-//           23, 9,
-//           37, 16;
-
-//        for(int i = 0; i < measurementCount; i++) {
-//            Update(measurement.row(i));
-//        }
-
-//        Matrix<float, stateSize,1> ans;
-//        ans <<  54.993,
-//                19.9933,
-//                3.99743,
-//                24.998,
-//                9.99829,
-//                1.99943;
-
-//        float diff = (ans-x).squaredNorm();
-//        if(diff > 0.001) {
-//            printf("FAILED TEST with delta %f\n", diff);
-//        } else {
-//            printf("PASSED TEST\n");
-//        }
-    }
 };
 
 
