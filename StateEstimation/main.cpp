@@ -7,6 +7,7 @@
 
 #include "KalmanFilter.h"
 #include "DrawUtilities.h"
+#include "SerialReader.h"
 
 using namespace std;
 using namespace cv;
@@ -14,16 +15,20 @@ using namespace Eigen;
 
 Point2f mousePos(0,0);
 
-const float timeStep = 0.2f;
+const float timeStep = 0.01f;
 const float initParticleVelocity = 10;
 const float gravityMag = 1000;
 const float meas_noise = 1;
-const int particleCount = 1;
+const int particleCount = 5;
 
 bool pauseSim = false;
 bool stepSim = false;
 bool hideTruth = true;
 bool hideEstimate = false;
+
+int width = 800;
+int height = 800;
+int serial_fd = 0;
 
 
 void onMouse(int event, int x, int y, int flags, void * data){
@@ -120,8 +125,31 @@ public:
 Patricle particles[particleCount];
 KalmanFilter2DPosVelAccel kf[particleCount];
 
-int width = 800;
-int height = 800;
+KalmanFilterGyro kf_gyro;
+
+
+bool ParseSerial(Matrix<float,3,1> & values){
+
+
+    if (serial_fd <= 0) {
+        printf("Cannot read serial\n");
+        return false;
+    }
+
+    unsigned char b;
+    read(serial_fd, &b,1);
+
+    if(b != 170) {
+//        printf("No sync byte\n", b);
+        return false;
+    }
+
+    values(0) = serial_read_Nbytes(serial_fd,2);
+    values(1) = serial_read_Nbytes(serial_fd,2);
+    values(2) = serial_read_Nbytes(serial_fd,2);
+
+    return true;
+}
 
 int main(int argc, char** argv)
 {
@@ -150,69 +178,75 @@ int main(int argc, char** argv)
     Point p1;
     Point p2;
 
-    while(1) {
-        char c = waitKey(30);
-        if(c == 27)
-            break;
-        if(c == 'r') {
-            for(int i = 0; i < particleCount; i++) {
-                kf[i].ResetEstimation();
-            }
-        }
-        if(c == ' ')
-            pauseSim = !pauseSim;
-        if(c == 'h')
-            hideTruth = !hideTruth;
-        if(c == 'e')
-            hideEstimate = !hideEstimate;
-        if(c == '.')
-            stepSim = true;
+    serial_fd = init_serial_input("/dev/ttyACM0");
 
-        if(pauseSim & !stepSim)
-            continue;
-        stepSim = false;
+    while(1) {
+        if(ParseSerial(kf_gyro.raw_data_sample)) {
+            kf_gyro.UpdateRawDataSample(timeStep);
+        }
+
+//        char c = waitKey(5);
+//        if(c == 27)
+//            break;
+//        if(c == 'r') {
+//            for(int i = 0; i < particleCount; i++) {
+//                kf[i].ResetEstimation();
+//            }
+//        }
+//        if(c == ' ')
+//            pauseSim = !pauseSim;
+//        if(c == 'h')
+//            hideTruth = !hideTruth;
+//        if(c == 'e')
+//            hideEstimate = !hideEstimate;
+//        if(c == '.')
+//            stepSim = true;
+
+//        if(pauseSim & !stepSim)
+//            continue;
+//        stepSim = false;
 
 //        printf("*************\n");
 
-        img.setTo(Scalar(0,0,0));
-        DrawCrossHair(img, mousePos,5, Scalar(0,0,255));
-        for(int i = 0; i < particleCount; i++) {
+//        img.setTo(Scalar(0,0,0));
+//        DrawCrossHair(img, mousePos,5, Scalar(0,0,255));
+//        for(int i = 0; i < particleCount; i++) {
 
-            //update particle
-            particles[i].ComputeGravity(width/2, height/2,gravityMag);
-            particles[i].Update();
+//            //update particle
+//            particles[i].ComputeGravity(width/2, height/2,gravityMag);
+//            particles[i].Update();
 
-            if(!hideTruth) {
-                p1 = particles[i].getPos();
-                p2 = p1 - particles[i].getVel();
-                DrawCrossHair(img, p1,3, Scalar(255,255,255));
-                line(img, p1,p2, Scalar(255,255,255));
-            }
+//            if(!hideTruth) {
+//                p1 = particles[i].getPos();
+//                p2 = p1 - particles[i].getVel();
+//                DrawCrossHair(img, p1,3, Scalar(255,255,255));
+//                line(img, p1,p2, Scalar(255,255,255));
+//            }
 
-            //update kalman filter
-            z <<    (particles[i].state(0,0) + randfGaussian(0,meas_noise)),
-                    (particles[i].state(0,1) + randfGaussian(0,meas_noise));
-            DrawCrossHair(img, toPoint(z,p1),3, Scalar(0,255,255));
+//            //update kalman filter
+//            z <<    (particles[i].state(0,0) + randfGaussian(0,meas_noise)),
+//                    (particles[i].state(0,1) + randfGaussian(0,meas_noise));
+//            DrawCrossHair(img, toPoint(z,p1),3, Scalar(0,255,255));
 
-            kf[i].Update(z,Ez,u,timeStep);
+//            kf[i].Update(z,Ez,u,timeStep);
 
-            if(!hideEstimate){
+//            if(!hideEstimate){
 
-                printMatrix("P", kf[i].Covariance());
+////                printMatrix("P", kf[i].Covariance());
 
-                p2 = toPoint(kf[i].Position(),p1) - toPoint(kf[i].Velocity(),p2);
-                circle(img, p1,4,Scalar(0,255,0));
-                line(img, p1, p2, Scalar(0,255,0));
+//                p2 = toPoint(kf[i].Position(),p1) - toPoint(kf[i].Velocity(),p2);
+//                circle(img, p1,4,Scalar(0,255,0));
+//                line(img, p1, p2, Scalar(0,255,0));
 
-                for(float t = 0; t < 2; t+= 2*timeStep) {
-                    toPoint(kf[i].PredictedPosition(t),p2);
-                    line(img, p1, p2, Scalar(0,128,0));
-                    p1 = p2;
-                }
-            }
-        }
+//                for(float t = 0; t < 2; t+= 2*timeStep) {
+//                    toPoint(kf[i].PredictedPosition(t),p2);
+//                    line(img, p1, p2, Scalar(0,128,0));
+//                    p1 = p2;
+//                }
+//            }
+//        }
 
-        imshow(windowName, img);
+//        imshow(windowName, img);
     }
 
     return 0;

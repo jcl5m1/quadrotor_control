@@ -510,4 +510,184 @@ public:
 
 };
 
+
+class KalmanFilterGyro {
+
+public:
+
+    static const int stateSize = 9;
+    static const int measureDim = 3;
+
+    //this a 2D position with hidden velocity and acceleration on each axis
+    Matrix<float, stateSize,1> x; //state estimate
+    Matrix<float, stateSize,stateSize> P; //uncertainty covariance
+
+    Matrix<float, stateSize,stateSize> Ex; //state prediction noise
+
+    Matrix<float, stateSize,stateSize> A;//state1 to state2 equations
+    Matrix<float, stateSize,1> B;//control input to state equations
+    Matrix<float, measureDim,stateSize> C; //state-to-measurement equation
+    Matrix<float, 2*measureDim,stateSize> Cstill; //state-to-measurement equation
+
+    Matrix<float, stateSize,stateSize> I; //identity
+
+    Matrix<float, measureDim,measureDim> S;
+    Matrix<float, stateSize,measureDim> K;
+    Matrix<float, stateSize,2*measureDim> Kstill;
+
+    int data_counter;
+    static const int data_max = 1000;
+    Matrix<float,measureDim,data_max> raw_data;
+    Matrix<float,measureDim,1> raw_data_sample;
+
+    Matrix<float, measureDim,measureDim> Ez;
+    Matrix<float, 2*measureDim,2*measureDim> EzStill;
+
+
+    static const int deg_per_sec = 3000;
+
+
+    KalmanFilterGyro(){
+
+
+        ResetEstimation();
+
+        data_counter = 0;
+
+        //measurement noise - default to identity
+        Ex =  MatrixXf::Identity(stateSize, stateSize);
+
+        //measurement function
+        C << 0,0,0,1,0,0,0,0,0,
+             0,0,0,0,1,0,0,0,0,
+             0,0,0,0,0,1,0,0,0; //measure velocities
+
+        //measurement function
+        Cstill <<   1,0,0,0,0,0,0,0,0,
+                    0,1,0,0,0,0,0,0,0,
+                    0,0,1,0,0,0,0,0,0, //measure pos and velocities
+                    0,0,0,1,0,0,0,0,0,
+                    0,0,0,0,1,0,0,0,0,
+                    0,0,0,0,0,1,0,0,0; //measure pos and velocities
+
+
+        I = MatrixXf::Identity(stateSize,stateSize);
+    }
+
+    Matrix<float, stateSize,stateSize> Covariance() {
+        return P;
+    }
+
+    Matrix<float, stateSize,1> State() {
+        return x;
+    }
+
+    void UpdateRawDataSample(float dt) {
+        printf("Sample: %d ", data_counter);
+        if(data_counter >= data_max) {
+            Update(raw_data_sample,dt);
+            printMatrix("x", x.transpose());
+            return;
+        } else {
+            Matrix<float,2*measureDim,1> stillMeas;
+            stillMeas.setZero();
+            stillMeas.block(3,0,3,1) = raw_data_sample;
+            UpdateStill(stillMeas,dt);
+            printMatrix("x", x.transpose());
+            printMatrix("P", P);
+            data_counter++;
+            return;
+        }
+
+        raw_data.col(data_counter%data_max) = raw_data_sample;
+        printMatrix("gyro data", raw_data.col(data_counter%data_max).transpose());
+        data_counter++;
+        if(data_counter == data_max) {
+            Matrix<float, measureDim,1> mean = raw_data.rowwise().sum()/data_max;
+            Matrix<float, measureDim,1> variance;
+            variance.setZero();
+            for(int i = 0; i < data_max; i++) {
+                variance += (raw_data.col(i) - mean).cwiseAbs2();
+            }
+            variance /= data_max-1;
+
+            printMatrix("mean",mean.transpose());
+            printMatrix("variance",variance.transpose());
+
+            Ez = variance.asDiagonal();
+            x.block(6,0,3,1) = mean;
+            printMatrix("x",x.transpose());
+            printMatrix("Ez",Ez);
+
+            EzStill = MatrixXf::Identity(2*measureDim, 2*measureDim);
+            EzStill.block(3,3,3,3) = Ez;
+        }
+    }
+
+    Vector3f Rotation() {
+        Vector3f result;
+        result[0] = x(0);
+        result[1] = x(1);
+        result[2] = x(2);
+        return result;
+    }
+
+    Vector3f RotationRate() {
+        Vector3f result;
+        result[0] = x(3);
+        result[1] = x(4);
+        result[2] = x(5);
+        return result;
+    }
+
+    void ResetEstimation() {
+        x.setZero();
+
+        //variability in prediction - i.e. how wrong is our prediction model
+        Ex = 5*MatrixXf::Identity(stateSize,stateSize);
+        Ez = 5*MatrixXf::Identity(measureDim, measureDim);
+        EzStill = 5*MatrixXf::Identity(2*measureDim, 2*measureDim);
+
+        //initial state covariance
+        P = 1000*MatrixXf::Identity(stateSize,stateSize);
+    }
+
+    void GenerateTransitionMatrix(float dt) {
+
+        float s = dt*deg_per_sec/32768.0f;
+        //state transition matrix
+        A << 1, 0, 0,  s, 0, 0, -s, 0, 0, //pos' = pos + s*vel - s*bias
+             0, 1, 0,  0, s, 0, 0, -s, 0,
+             0, 0, 1,  0, 0, s, 0, 0, -s,
+             0, 0, 0,  1, 0, 0, 0, 0, 0,
+             0, 0, 0,  0, 1, 0, 0, 0, 0,
+             0, 0, 0,  0, 0, 1, 0, 0, 0,
+             0, 0, 0,  0, 0, 0, 1, 0, 0,
+             0, 0, 0,  0, 0, 0, 0, 1, 0,
+             0, 0, 0,  0, 0, 0, 0, 0, 1;
+
+    }
+
+    void Update(Matrix<float, measureDim,1> z, float dt) {
+
+        GenerateTransitionMatrix(dt);
+        x = A*x;
+        P = A*P*A.transpose() + Ex; //why do you have to do the projection rather than just multply?
+        S =(C*P*C.transpose() + Ez);
+        K = P*C.transpose() * S.inverse();
+        x = x + K*(z - C*x);
+        P = (I - K*C)*P;
+    }
+
+    void UpdateStill(Matrix<float, 2*measureDim,1> z, float dt) {
+        GenerateTransitionMatrix(dt);
+        x = A*x;
+        P = A*P*A.transpose() + Ex; //why do you have to do the projection rather than just multply?
+        Kstill = P*Cstill.transpose() * (Cstill*P*Cstill.transpose() + EzStill).inverse();
+        x = x + Kstill*(z - Cstill*x);
+        P = (I - Kstill*Cstill)*P;
+    }
+
+
+};
 #endif // KALMANFILTER_H

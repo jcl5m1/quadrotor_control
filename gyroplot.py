@@ -83,7 +83,7 @@ class AnalogData:
 		self.addToBuf(self.az, data[2])
 
 
-port = "COM3"
+port = "/dev/ttyACM0"
 baud = 57600
 print "Openning",port,"at",baud,"..."
 ser = serial.Serial(port, baud, timeout=1)
